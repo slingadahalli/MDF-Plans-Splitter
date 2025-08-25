@@ -1,5 +1,5 @@
 # app.py
-import re
+import re, pdfplumber
 import io
 import tempfile
 from datetime import datetime
@@ -8,17 +8,51 @@ import streamlit as st
 import pandas as pd
 
 # PDF engines
-import fitz  # PyMuPDF
+#import fitz  # PyMuPDF
 import camelot
 
 # -------------------------------
 # Patterns & Config
 # -------------------------------
+
 HEADER_PATTERNS = {
-    "plan_period": re.compile(r"Plan\s*Period:\s*([^\n\r]+)", re.IGNORECASE),
-    "po_number":  re.compile(r"PO\s*Number:\s*([0-9\-]+)", re.IGNORECASE),
-    "partner":    re.compile(r"Partner\s*Legal\s*Name:\s*([^\n\r]+)", re.IGNORECASE),
+    "plan_period": [
+        re.compile(r"Plan\s*Period\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+        re.compile(r"Period\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+        re.compile(r"Plan\s*Window\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+    ],
+    "po_number": [
+        re.compile(r"\bPO\s*Number\s*[:\-]\s*([0-9\-]+)", re.IGNORECASE),
+        re.compile(r"\bPO\s*#\s*[:\-]?\s*([0-9\-]+)", re.IGNORECASE),
+        re.compile(r"\bPurchase\s*Order\s*(?:Number)?\s*[:\-]\s*([0-9\-]+)", re.IGNORECASE),
+        re.compile(r"\bPO\s*[:\-]\s*([0-9\-]+)", re.IGNORECASE),
+    ],
+    "partner": [
+        re.compile(r"Partner\s*Legal\s*Name\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+        re.compile(r"Partner\s*Name\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+        re.compile(r"Partner\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+        re.compile(r"Reseller\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE),
+    ],
 }
+
+def _first_match(text: str, pats: list[re.Pattern]) -> str:
+    for p in pats:
+        m = p.search(text)
+        if m:
+            return re.sub(r"\s+", " ", m.group(1)).strip()
+    return ""
+
+def extract_headers(pdf_path: str) -> dict:
+    text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages[:2]:
+            text += (page.extract_text() or "") + "\n"
+    return {
+        "Partner":     _first_match(text, HEADER_PATTERNS["partner"]),
+        "PO Number":   _first_match(text, HEADER_PATTERNS["po_number"]),
+        "Plan Period": _first_match(text, HEADER_PATTERNS["plan_period"]),
+    }
+
 
 # Acceptable synonyms for the table columns
 COL_SYNONYMS = {
@@ -63,19 +97,6 @@ def clean_amount(x):
     if re.match(r"^-?\d+\.0+$", num):
         num = str(int(float(num)))
     return num
-
-def extract_headers(pdf_path: str) -> dict:
-    doc = fitz.open(pdf_path)
-    full_text = ""
-    for pno in range(min(2, doc.page_count)):
-        full_text += doc.load_page(pno).get_text("text") + "\n"
-    doc.close()
-    headers = {}
-    for key, pat in HEADER_PATTERNS.items():
-        m = pat.search(full_text)
-        if m:
-            headers[key] = m.group(1).strip()
-    return headers
 
 def _pick_column_indices(df: pd.DataFrame):
     # try to find the header row
